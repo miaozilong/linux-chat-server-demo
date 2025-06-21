@@ -7,11 +7,36 @@
 
 #define PORT 8080           // 1. 定义服务器监听端口号
 #define BUFFER_SIZE 1024    // 2. 定义缓冲区大小
+// 全局客户端列表及其锁
+#define MAX_CLIENTS 100
+int client_sockets[MAX_CLIENTS];
+int client_count = 0;
+pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// 添加函数用于广播消息
+void broadcast_message(const char *message) {
+    pthread_mutex_lock(&client_mutex);
+    for (int i = 0; i < client_count; ++i) {
+        int client_sock = client_sockets[i];
+        //if (client_sock != sender_socket) {  // 不回传给发送者
+        send(client_sock, message, strlen(message), 0);
+        //}
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
+
 
 // 3. 处理客户端连接的线程函数
-void* handle_client(void* arg) {
-    int client_socket = *(int*)arg;  // 4. 获取客户端 socket 描述符
+void *handle_client(void *arg) {
+    int client_socket = *(int *) arg;  // 4. 获取客户端 socket 描述符
     free(arg);  // 5. 释放传入的堆内存指针
+
+    // 添加客户端 socket 到全局列表
+    pthread_mutex_lock(&client_mutex);
+    if (client_count < MAX_CLIENTS) {
+        client_sockets[client_count++] = client_socket;
+    }
+    pthread_mutex_unlock(&client_mutex);
 
     char buffer[BUFFER_SIZE];  // 6. 定义用于接收消息的缓冲区
 
@@ -29,7 +54,21 @@ void* handle_client(void* arg) {
 
         printf("[线程 %ld] 接收到消息: %s\n", pthread_self(), buffer);  // 12. 打印接收到的消息
         fflush(stdout);
+        //  向所有客户端广播消息
+        broadcast_message(buffer);  // 向其他客户端广播消息
+
     }
+
+    // 从全局客户端列表中移除该 socket
+    pthread_mutex_lock(&client_mutex);
+    for (int i = 0; i < client_count; ++i) {
+        if (client_sockets[i] == client_socket) {
+            client_sockets[i] = client_sockets[client_count - 1];  // 覆盖并压缩数组
+            client_count--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&client_mutex);
 
     close(client_socket);  // 13. 关闭客户端 socket
     return NULL;  // 14. 线程结束
@@ -57,7 +96,7 @@ int main() {
     address.sin_port = htons(PORT);        // 端口号转换为网络字节序
 
     // 21. 绑定 socket 到指定地址和端口
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+    if (bind(server_fd, (struct sockaddr *) &address, sizeof(address)) < 0) {
         perror("bind failed");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -75,9 +114,9 @@ int main() {
 
     while (1) {
         // 23. 为每个新连接分配内存，保存客户端 socket
-        int* new_socket = malloc(sizeof(int));
+        int *new_socket = malloc(sizeof(int));
         // 24. 接受客户端连接，阻塞等待
-        *new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
+        *new_socket = accept(server_fd, (struct sockaddr *) &address, (socklen_t *) &addrlen);
 
         if (*new_socket < 0) {
             perror("accept");
